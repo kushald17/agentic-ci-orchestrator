@@ -1,0 +1,164 @@
+# Agentic CI Orchestrator Configuration
+
+# Ollama Configuration
+ollama:
+  base_url: "http://localhost:11434"
+  timeout: 300
+  models:
+    reasoning: "llama3:70b"
+    lightweight: "llama3:13b"
+    classification: "llama3:7b"
+  temperature:
+    patch_generation: 0.0
+    workflow_generation: 0.0
+    explanation: 0.3
+    classification: 0.2
+
+# GitHub Configuration
+github:
+  # Use either token or app credentials
+  token: "${GITHUB_TOKEN}"  # Personal Access Token
+  # OR GitHub App:
+  # app_id: "${GITHUB_APP_ID}"
+  # installation_id: "${GITHUB_INSTALLATION_ID}"
+  # private_key_path: "path/to/private-key.pem"
+  
+  api_url: "https://api.github.com"
+  branch_prefix: "agent/ci-"
+  default_base_branch: "main"
+
+# Agent Configuration
+agents:
+  detector:
+    timeout: 60
+    max_retries: 2
+  
+  generator:
+    timeout: 120
+    max_retries: 2
+    model: "reasoning"
+  
+  validator:
+    timeout: 30
+    max_retries: 1
+  
+  monitor:
+    timeout: 300
+    poll_interval: 30
+    model: "lightweight"
+  
+  healer:
+    timeout: 180
+    max_retries: 1
+    model: "reasoning"
+    max_healing_attempts: 3
+  
+  sandbox:
+    timeout: 600
+    docker_image: "ubuntu:22.04"
+
+# Safety Configuration
+safety:
+  # Auto-commit allowed only for these categories
+  auto_commit_categories:
+    - "transient"
+    - "flaky_test"
+  
+  # Require human approval for these
+  require_approval_categories:
+    - "code_change"
+    - "secret_change"
+    - "workflow_change"
+    - "dependency_major_update"
+  
+  # Confidence thresholds (0.0 - 1.0)
+  confidence:
+    auto_commit_threshold: 0.9
+    pr_creation_threshold: 0.7
+    human_approval_threshold: 0.6
+  
+  # Rate limiting
+  rate_limits:
+    max_daily_auto_fixes_per_repo: 2
+    max_healing_attempts_per_run: 3
+    max_concurrent_repos: 5
+  
+  # Circuit breaker
+  circuit_breaker:
+    failure_threshold: 5
+    reset_timeout: 3600  # seconds
+  
+  # Forbidden patterns
+  forbidden:
+    inline_secrets: true
+    unsafe_actions:
+      - "actions/github-script@*"
+      - "crazy-max/ghaction-github-runtime@*"
+    forbidden_commands:
+      - "curl | bash"
+      - "wget | sh"
+      - "rm -rf /"
+
+# Workflow Generation
+workflows:
+  max_file_size: 10240  # bytes
+  job_timeout: 3600  # seconds
+  max_matrix_combinations: 10
+  
+  # Default steps per language
+  languages:
+    python:
+      lint: ["ruff", "black --check"]
+      test: ["pytest --cov"]
+      build: ["python -m build"]
+    
+    node:
+      lint: ["npm run lint"]
+      test: ["npm test"]
+      build: ["npm run build"]
+    
+    java:
+      lint: ["mvn checkstyle:check"]
+      test: ["mvn test"]
+      build: ["mvn package"]
+
+# Monitoring Configuration
+monitoring:
+  log_retention_days: 30
+  metrics_enabled: true
+  metrics_port: 9090
+  
+  structured_logging:
+    format: "json"
+    level: "INFO"
+    
+  audit_log:
+    enabled: true
+    path: "logs/audit.log"
+
+# Sandbox Configuration
+sandbox:
+  enabled: true
+  cleanup_after_test: true
+  max_execution_time: 600
+  resource_limits:
+    cpu_quota: 100000  # microseconds per 100ms
+    memory: "2g"
+    disk: "10g"
+
+# Notification Configuration (optional)
+notifications:
+  enabled: false
+  # slack:
+  #   webhook_url: "${SLACK_WEBHOOK_URL}"
+  # email:
+  #   smtp_host: "smtp.gmail.com"
+  #   smtp_port: 587
+  #   from: "ci-agent@example.com"
+
+# Development Mode
+development:
+  debug: false
+  dry_run: false
+  skip_sandbox: false
+  log_prompts: true
