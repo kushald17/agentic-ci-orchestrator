@@ -126,6 +126,12 @@ class AgentState(BaseModel):
     repo_branch: str
     trigger_type: Literal["manual", "failure", "scheduled"] = "manual"
     
+    # Orchestration control
+    config: Optional[Any] = None  # Configuration object
+    no_pr: bool = False  # Skip PR creation
+    enable_monitoring: bool = False  # Enable workflow monitoring
+    no_heal: bool = False  # Disable healing
+    
     # Repository Detection
     repo_metadata: Optional[RepositoryMetadata] = None
     
