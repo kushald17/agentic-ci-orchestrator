@@ -98,14 +98,29 @@ class HealerAgent:
         start_time = time.time()
         
         try:
-            # Analyze failure and determine strategy
+            # Fetch detailed logs for better analysis
             failure = state.failures[0]  # Heal first failure
+            detailed_logs = self._fetch_failure_logs(failure, state)
+            
+            # Enrich failure with detailed logs
+            if detailed_logs:
+                failure.log_excerpt = detailed_logs[:2000]  # Limit to 2000 chars
+            
+            # Analyze failure and determine strategy
             strategy = self._determine_strategy(failure, state)
             
             if not strategy:
                 logger.warning("no_healing_strategy", failure_type=failure.failure_type)
-                state.next_action = "request_approval"
-                return state
+                # Try LLM-based healing as fallback
+                logger.info("attempting_llm_healing")
+                strategy = {
+                    "name": "llm_analysis",
+                    "fix_type": "llm_patch",
+                    "confidence": 0.60,
+                }
+                if not strategy:
+                    state.next_action = "request_approval"
+                    return state
             
             # Generate patch
             patch = self._generate_patch(failure, strategy, state)
@@ -163,6 +178,40 @@ class HealerAgent:
             state.add_error(error_msg)
             state.next_action = "request_approval"
             return state
+    
+    def _fetch_failure_logs(self, failure, state: AgentState) -> Optional[str]:
+        """Fetch detailed logs from the failed workflow run."""
+        try:
+            if not state.workflow_run or not state.workflow_run.run_id:
+                return None
+            
+            repo = self.github_client.get_repository(state.repo_owner, state.repo_name)
+            run_id = state.workflow_run.run_id
+            
+            # Try to get workflow run logs
+            logs = self.github_client.get_workflow_run_logs(repo, run_id)
+            
+            if logs:
+                # Extract relevant failure information
+                log_lines = logs.split('\n')
+                # Get last 100 lines which usually contain error information
+                relevant_logs = '\n'.join(log_lines[-100:])
+                logger.info("fetched_logs", length=len(relevant_logs))
+                return relevant_logs
+            
+            # Fallback: try to get workflow run details
+            run = self.github_client.get_workflow_run(repo, run_id)
+            if run:
+                log_text = f"Workflow Run #{run_id}\n"
+                log_text += f"Status: {run.get('status', 'unknown')}\n"
+                log_text += f"Conclusion: {run.get('conclusion', 'unknown')}\n"
+                return log_text
+            
+            return None
+            
+        except Exception as e:
+            logger.warning("log_fetch_failed", error=str(e))
+            return None
     
     def _determine_strategy(self, failure, state: AgentState) -> Optional[Dict]:
         """
@@ -234,6 +283,10 @@ class HealerAgent:
         elif strategy["name"] == "java_version":
             return self._generate_java_version_fix(failure, state)
         
+        elif strategy["name"] == "llm_analysis":
+            # Use LLM for complex analysis
+            return self._generate_llm_patch(failure, strategy, state)
+        
         # For complex issues, use LLM
         return self._generate_llm_patch(failure, strategy, state)
     
@@ -275,7 +328,16 @@ class HealerAgent:
         }
     
     def _generate_test_failure_fix(self, failure, state: AgentState) -> Dict:
-        """Generate fix for test failures by adding proper test commands."""
+        """Generate fix for test failures by analyzing logs with LLM."""
+        
+        # If we have detailed logs, use LLM to generate a proper fix
+        if failure.log_excerpt and len(failure.log_excerpt) > 50:
+            logger.info("using_llm_for_test_fix", log_length=len(failure.log_excerpt))
+            llm_patch = self._generate_llm_patch(failure, {"name": "test_failure", "confidence": 0.70}, state)
+            if llm_patch:
+                return llm_patch
+        
+        # Fallback to simple workflow fix
         workflow_content = state.workflow_content.content
         lines = workflow_content.split('\n')
         new_lines = []
@@ -326,22 +388,48 @@ class HealerAgent:
     def _generate_llm_patch(self, failure, strategy: Dict, state: AgentState) -> Optional[Dict]:
         """Generate patch using LLM for complex issues."""
         try:
-            system_prompt = """You are an expert at fixing CI/CD workflows. Given a failure, generate a YAML patch to fix it.
-Output ONLY the complete fixed YAML workflow, no explanations or markdown."""
+            system_prompt = """You are an expert at fixing GitHub Actions workflows and test failures.
+Analyze the failure carefully and generate a complete fixed YAML workflow.
+
+Key considerations:
+1. For test failures: Check if the issue is in the workflow setup (missing dependencies, wrong commands, permissions)
+2. For Java/Gradle: Ensure gradlew has execute permissions (chmod +x gradlew)
+3. For build errors: Check Java version, Gradle version, dependencies
+4. Preserve all existing jobs and structure
+5. Only modify what's necessary to fix the failure
+
+Output ONLY the complete fixed YAML workflow, no explanations or markdown fences."""
+            
+            # Build comprehensive failure context
+            failure_context = f"""Failure Analysis:
+- Type: {failure.failure_type}
+- Job: {failure.job_name}
+- Step: {failure.step_name}
+- Error: {failure.error_message}"""
+            
+            if failure.root_cause:
+                failure_context += f"\n- Root Cause: {failure.root_cause}"
+            
+            if failure.log_excerpt:
+                failure_context += f"\n\nDetailed Logs:\n{failure.log_excerpt[:1500]}"
             
             user_prompt = f"""Fix this GitHub Actions workflow failure:
 
-Failure Type: {failure.failure_type}
-Step: {failure.step_name}
-Error: {failure.error_message}
-Root Cause: {failure.root_cause}
+{failure_context}
+
+Repository: {state.repo_owner}/{state.repo_name}
+Previous Healing Attempts: {state.current_healing_count}
 
 Current Workflow:
 ```yaml
 {state.workflow_content.content}
 ```
 
-Generate the complete fixed YAML workflow."""
+Analyze the failure and generate the complete fixed YAML workflow.
+Focus on fixing the root cause, not just symptoms."""
+            
+            logger.info("generating_llm_patch", failure_type=failure.failure_type, 
+                       attempt=state.current_healing_count + 1)
             
             response = self.ollama_client.generate(
                 model=self.model,
@@ -357,11 +445,13 @@ Generate the complete fixed YAML workflow."""
             elif '```' in content:
                 content = content.split('```')[1].split('```')[0].strip()
             
+            logger.info("llm_patch_generated", length=len(content), confidence=0.70)
+            
             return {
                 "content": content,
                 "files": [state.workflow_content.path],
                 "confidence": 0.70,  # Lower confidence for LLM patches
-                "description": f"LLM-generated fix for {failure.failure_type}",
+                "description": f"LLM-generated fix for {failure.failure_type} in {failure.step_name}",
             }
             
         except Exception as e:
