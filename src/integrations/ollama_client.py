@@ -45,7 +45,7 @@ class OllamaClient:
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        timeout: int = 300,
+        timeout: int = 120,  # Reduced from 300 to 120 seconds
         max_retries: int = 3,
     ):
         self.base_url = base_url.rstrip("/")
@@ -125,6 +125,7 @@ class OllamaClient:
         format: Optional[Literal["json"]] = None,
         stream: bool = False,
         options: Optional[Dict[str, Any]] = None,
+        timeout: Optional[int] = None,  # Allow per-request timeout override
     ) -> OllamaResponse:
         """
         Generate completion using Ollama.
@@ -170,10 +171,14 @@ class OllamaClient:
         
         start_time = time.time()
         
+        # Use custom timeout if provided, otherwise use instance timeout
+        request_timeout = timeout if timeout is not None else self.timeout
+        
         try:
             response = self.client.post(
                 f"{self.base_url}/api/generate",
                 json=payload,
+                timeout=request_timeout,  # Use the timeout value
             )
             response.raise_for_status()
             

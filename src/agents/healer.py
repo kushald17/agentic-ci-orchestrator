@@ -51,7 +51,7 @@ class HealerAgent:
         self,
         github_client: GitHubClient,
         ollama_client: OllamaClient,
-        model: str = "llama3:70b",
+        model: str = "llama3:8b",  # Use faster 8b model instead of 70b
         max_attempts: int = 3,
     ):
         """
@@ -84,7 +84,11 @@ class HealerAgent:
             return state
         
         if not state.should_continue_healing(self.max_attempts):
+            # Provide detailed failure analysis
+            failure_summary = self._generate_failure_summary(state)
             state.add_error(f"Max healing attempts ({self.max_attempts}) reached")
+            state.add_error(f"\n{failure_summary}")
+            logger.error("max_healing_attempts_reached", summary=failure_summary)
             state.next_action = "request_approval"
             return state
         
@@ -110,7 +114,8 @@ class HealerAgent:
             strategy = self._determine_strategy(failure, state)
             
             if not strategy:
-                logger.warning("no_healing_strategy", failure_type=failure.failure_type)
+                reason = self._analyze_why_no_strategy(failure)
+                logger.warning("no_healing_strategy", failure_type=failure.failure_type, reason=reason)
                 # Try LLM-based healing as fallback
                 logger.info("attempting_llm_healing")
                 strategy = {
@@ -119,6 +124,7 @@ class HealerAgent:
                     "confidence": 0.60,
                 }
                 if not strategy:
+                    state.add_error(f"No healing strategy available: {reason}")
                     state.next_action = "request_approval"
                     return state
             
@@ -126,7 +132,11 @@ class HealerAgent:
             patch = self._generate_patch(failure, strategy, state)
             
             if not patch:
-                logger.warning("patch_generation_failed")
+                reason = f"Failed to generate patch for {failure.failure_type} using {strategy['name']} strategy"
+                manual_fix = self._suggest_manual_fix(failure, state)
+                logger.warning("patch_generation_failed", reason=reason, manual_fix=manual_fix)
+                state.add_error(f"Patch generation failed: {reason}")
+                state.add_error(f"\nManual fix required:\n{manual_fix}")
                 state.next_action = "request_approval"
                 return state
             
@@ -148,7 +158,11 @@ class HealerAgent:
             attempt.applied = applied
             
             if not applied:
-                logger.error("patch_application_failed")
+                reason = "Failed to commit healing patch to PR branch"
+                manual_fix = "Please manually apply the suggested changes to the workflow file"
+                logger.error("patch_application_failed", reason=reason)
+                state.add_error(f"Patch application failed: {reason}")
+                state.add_error(f"Manual fix: {manual_fix}")
                 state.next_action = "request_approval"
                 return state
             
@@ -213,6 +227,29 @@ class HealerAgent:
             logger.warning("log_fetch_failed", error=str(e))
             return None
     
+    def _analyze_why_no_strategy(self, failure) -> str:
+        """Analyze why no healing strategy was found."""
+        reasons = []
+        
+        if not failure.log_excerpt or len(failure.log_excerpt) < 20:
+            reasons.append("Insufficient log data to analyze failure")
+        
+        if failure.failure_type == "unknown":
+            reasons.append("Failure type could not be classified")
+        
+        error_text = f"{failure.step_name} {failure.error_message}".lower()
+        
+        if "test" in error_text and "failed" in error_text:
+            reasons.append("Test failure detected but specific test issue unclear")
+        elif "build" in error_text:
+            reasons.append("Build failure detected but root cause unclear")
+        elif "permission" in error_text or "denied" in error_text:
+            reasons.append("Permission issue detected but context insufficient")
+        else:
+            reasons.append(f"Unrecognized failure pattern in step: {failure.step_name}")
+        
+        return "; ".join(reasons) if reasons else "Unknown reason"
+    
     def _determine_strategy(self, failure, state: AgentState) -> Optional[Dict]:
         """
         Determine the best healing strategy for a failure.
@@ -260,6 +297,86 @@ class HealerAgent:
         
         # No clear strategy
         return None
+    
+    def _suggest_manual_fix(self, failure, state: AgentState) -> str:
+        """Suggest manual fixes based on failure type."""
+        suggestions = []
+        
+        suggestions.append(f"Failure Type: {failure.failure_type}")
+        suggestions.append(f"Failed Step: {failure.step_name}")
+        suggestions.append(f"Error: {failure.error_message}")
+        suggestions.append("\nRecommended Actions:")
+        
+        if failure.failure_type == "test_failure":
+            suggestions.append("1. Review test logs in GitHub Actions")
+            suggestions.append("2. Check if tests are failing locally")
+            suggestions.append("3. Fix failing tests in your codebase")
+            suggestions.append("4. Consider if test setup/dependencies are correct")
+        elif failure.failure_type == "build_error":
+            suggestions.append("1. Check compilation errors in workflow logs")
+            suggestions.append("2. Verify build dependencies are correct")
+            suggestions.append("3. Ensure build tool versions match project requirements")
+            suggestions.append("4. Review recent code changes that may break build")
+        elif "gradle" in failure.error_message.lower():
+            suggestions.append("1. Add 'chmod +x gradlew' before running Gradle")
+            suggestions.append("2. Ensure gradlew file is committed to repository")
+            suggestions.append("3. Check Gradle version compatibility")
+        elif "permission" in failure.error_message.lower():
+            suggestions.append("1. Add execute permissions to required files")
+            suggestions.append("2. Check workflow file permissions settings")
+            suggestions.append("3. Verify GitHub Actions has necessary permissions")
+        else:
+            suggestions.append("1. Review complete workflow logs for details")
+            suggestions.append("2. Check if issue is reproducible locally")
+            suggestions.append("3. Compare with working workflow configurations")
+            suggestions.append("4. Consider if recent changes introduced the issue")
+        
+        suggestions.append(f"\nWorkflow URL: https://github.com/{state.repo_owner}/{state.repo_name}/actions/runs/{state.workflow_run.run_id if state.workflow_run else 'N/A'}")
+        suggestions.append(f"PR URL: {state.pr_url if hasattr(state, 'pr_url') else 'N/A'}")
+        
+        return "\n".join(suggestions)
+    
+    def _generate_failure_summary(self, state: AgentState) -> str:
+        """Generate a comprehensive failure summary after exhausting healing attempts."""
+        summary = []
+        summary.append("\n" + "="*60)
+        summary.append("HEALING FAILURE SUMMARY")
+        summary.append("="*60)
+        
+        summary.append(f"\nRepository: {state.repo_owner}/{state.repo_name}")
+        summary.append(f"Healing Attempts: {state.current_healing_count}/{self.max_attempts}")
+        
+        if state.failures:
+            summary.append(f"\nPersistent Failures: {len(state.failures)}")
+            for i, failure in enumerate(state.failures[:3], 1):  # Show first 3
+                summary.append(f"\n{i}. {failure.failure_type.upper()}")
+                summary.append(f"   Step: {failure.step_name}")
+                summary.append(f"   Error: {failure.error_message[:100]}...")
+        
+        if state.healing_attempts:
+            summary.append(f"\nStrategies Attempted:")
+            for attempt in state.healing_attempts:
+                summary.append(f"  - {attempt.strategy} (confidence: {attempt.confidence:.0%})")
+        
+        summary.append("\nWhy Healing Failed:")
+        if state.failures:
+            failure = state.failures[0]
+            if failure.failure_type == "test_failure":
+                summary.append("  • Test failures require code-level fixes, not just workflow changes")
+                summary.append("  • The actual test logic needs to be corrected in the codebase")
+            elif failure.failure_type == "build_error":
+                summary.append("  • Build errors may require dependency or configuration updates")
+                summary.append("  • Source code compilation issues need manual resolution")
+            else:
+                summary.append("  • Issue type not covered by automated healing strategies")
+                summary.append("  • Manual investigation of logs required")
+        
+        manual_fix = self._suggest_manual_fix(state.failures[0] if state.failures else None, state) if state.failures else "Review workflow logs"
+        summary.append(f"\n{manual_fix}")
+        
+        summary.append("\n" + "="*60)
+        
+        return "\n".join(summary)
     
     def _generate_patch(self, failure, strategy: Dict, state: AgentState) -> Optional[Dict]:
         """
@@ -436,6 +553,7 @@ Focus on fixing the root cause, not just symptoms."""
                 prompt=user_prompt,
                 system=system_prompt,
                 temperature=0.1,
+                timeout=120,  # 2 minute timeout for faster model
             )
             
             # Extract YAML from response

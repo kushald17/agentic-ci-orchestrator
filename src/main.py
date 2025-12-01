@@ -143,6 +143,16 @@ def print_results(state: AgentState, mode: str):
                 for attempt in state.healing_attempts:
                     status = "✓" if attempt.resulted_in_success else "⚠️"
                     print(f"    {status} {attempt.strategy} (confidence: {attempt.confidence:.0%})")
+            
+            # Show errors/warnings if any
+            if state.errors:
+                print(f"\n⚠️ Issues Encountered:")
+                for error in state.errors:
+                    # Multi-line errors (like our detailed summaries) get special formatting
+                    if "\n" in error:
+                        print(error)
+                    else:
+                        print(f"  • {error}")
 
 
 def main():
