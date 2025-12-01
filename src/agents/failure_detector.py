@@ -275,18 +275,23 @@ class FailureDetectorAgent:
         Returns:
             True if healable, False otherwise
         """
-        # For Phase 3, we're just detecting
-        # Phase 4 will implement actual healing
-        
+        # Consider most failure types as potentially healable
+        # The healer agent will make the final determination
         healable_types = {
             "workflow_misconfiguration",
-            "build_error",  # Some build errors like missing chmod
+            "build_error",
+            "test_failure",
+            "dependency_error",
+            "permission_error",
+            "syntax_error",
+            "runtime_error",
+            "unknown",  # Try to heal even unknown failures
         }
         
         for failure in failures:
-            if failure.failure_type in healable_types and failure.confidence > 0.6:
+            if failure.failure_type in healable_types and failure.confidence > 0.3:
                 return True
         
-        # For now, consider most failures not auto-healable
-        # This will be expanded in Phase 4
-        return False
+        # If we have any failures, attempt healing
+        # Let the healer agent decide if it can fix them
+        return len(failures) > 0
