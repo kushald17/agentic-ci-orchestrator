@@ -83,7 +83,7 @@ class GitCommitAgent:
             )
             
             state.git_operation = git_operation
-            state.next_action = "create_pr"
+            state.next_action = "pr_create"
             
             duration = time.time() - start_time
             state.add_agent_record(

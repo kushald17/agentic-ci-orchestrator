@@ -118,10 +118,8 @@ def validate_node(state: dict) -> dict:
         agent_state = AgentState(**state)
         config = agent_state.config
         
-        validator = YAMLValidatorAgent(
-            confidence_threshold=config.safety_confidence_validation_threshold,
-            max_workflow_size=config.safety_max_workflow_size,
-        )
+        # Pass the full config dict to validator
+        validator = YAMLValidatorAgent(config.get_all())
         
         result = validator.validate(agent_state)
         
@@ -151,9 +149,8 @@ def diff_analyze_node(state: dict) -> dict:
         agent_state = AgentState(**state)
         config = agent_state.config
         
-        analyzer = DiffAnalyzerAgent(
-            auto_commit_confidence=config.safety_confidence_auto_commit_threshold,
-        )
+        # Pass the full config dict to analyzer
+        analyzer = DiffAnalyzerAgent(config.get_all())
         
         result = analyzer.analyze(agent_state)
         

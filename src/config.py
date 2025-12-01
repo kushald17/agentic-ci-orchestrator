@@ -128,6 +128,22 @@ class Config:
         return self.get("safety.confidence.pr_creation_threshold", 0.7)
     
     @property
+    def safety_confidence_validation_threshold(self) -> float:
+        return self.get("safety.confidence.human_approval_threshold", 0.6)
+    
+    @property
+    def safety_max_workflow_size(self) -> int:
+        return self.get("workflows.max_file_size", 10240)
+    
+    @property
+    def safety_confidence_auto_commit_threshold(self) -> float:
+        return self.get("safety.confidence.auto_commit_threshold", 0.9)
+    
+    @property
+    def safety_max_healing_attempts_per_run(self) -> int:
+        return self.get("safety.rate_limits.max_healing_attempts_per_run", 3)
+    
+    @property
     def development_mode(self) -> bool:
         return self.get("development.debug", False)
     

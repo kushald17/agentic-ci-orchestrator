@@ -175,6 +175,7 @@ class AgentState(BaseModel):
         "generate",
         "validate",
         "commit",
+        "pr_create",
         "dispatch",
         "monitor",
         "diagnose",
