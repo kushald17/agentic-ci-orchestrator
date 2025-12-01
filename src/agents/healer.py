@@ -35,6 +35,11 @@ class HealerAgent:
             "fix_type": "modify_dependencies",
             "confidence": 0.85,
         },
+        "python_build_failure": {
+            "pattern": ["build package", "python -m build", "no such file", "pyproject.toml", "setup.py"],
+            "fix_type": "remove_build_step",
+            "confidence": 0.80,
+        },
         "node_dependency": {
             "pattern": ["cannot find module", "error: cannot find package"],
             "fix_type": "modify_dependencies",
@@ -400,6 +405,9 @@ class HealerAgent:
         elif strategy["name"] == "java_version":
             return self._generate_java_version_fix(failure, state)
         
+        elif strategy["name"] == "python_build_failure":
+            return self._generate_python_build_fix(state)
+        
         elif strategy["name"] == "llm_analysis":
             # Use LLM for complex analysis
             return self._generate_llm_patch(failure, strategy, state)
@@ -484,6 +492,45 @@ class HealerAgent:
             "files": [state.workflow_content.path],
             "confidence": 0.75,
             "description": "Add proper test flags to show all failures and continue on error",
+        }
+    
+    def _generate_python_build_fix(self, state: AgentState) -> Dict:
+        """Generate fix for Python build package failures by removing or fixing the build step."""
+        workflow_content = state.workflow_content.content
+        lines = workflow_content.split('\n')
+        new_lines = []
+        skip_until_next_step = False
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            
+            # Check if this is the "Build package" step
+            if '- name:' in line and ('Build package' in line or 'build package' in line.lower()):
+                # Skip this step and its run command
+                skip_until_next_step = True
+                logger.info("removing_build_package_step")
+                i += 1
+                continue
+            
+            # Skip lines until we hit the next step or end of steps section
+            if skip_until_next_step:
+                if line.strip().startswith('- name:') or line.strip().startswith('strategy:') or not line.strip():
+                    skip_until_next_step = False
+                else:
+                    i += 1
+                    continue
+            
+            new_lines.append(line)
+            i += 1
+        
+        new_content = '\n'.join(new_lines)
+        
+        return {
+            "content": new_content,
+            "files": [state.workflow_content.path],
+            "confidence": 0.80,
+            "description": "Remove Python build step that requires pyproject.toml/setup.py",
         }
     
     def _generate_java_version_fix(self, failure, state: AgentState) -> Dict:
