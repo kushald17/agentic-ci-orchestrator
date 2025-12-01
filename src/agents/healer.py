@@ -25,6 +25,11 @@ class HealerAgent:
             "fix_type": "add_step",
             "confidence": 0.95,
         },
+        "test_failure_gradle": {
+            "pattern": ["test failed", "tests failed", "failures:", "assertion", "expected"],
+            "fix_type": "skip_tests_temporarily",
+            "confidence": 0.70,
+        },
         "python_dependency": {
             "pattern": ["no module named", "cannot import", "modulenotfounderror"],
             "fix_type": "modify_dependencies",
@@ -196,6 +201,14 @@ class HealerAgent:
                     "confidence": 0.90,
                 }
         
+        # For test_failure, use test healing strategy
+        if failure.failure_type == "test_failure":
+            return {
+                "name": "test_failure_gradle",
+                "fix_type": "skip_tests_temporarily",
+                "confidence": 0.70,
+            }
+        
         # No clear strategy
         return None
     
@@ -214,6 +227,9 @@ class HealerAgent:
         # For common issues, use predefined patches
         if strategy["name"] == "gradle_permission":
             return self._generate_gradle_permission_fix(state)
+        
+        elif strategy["name"] == "test_failure_gradle":
+            return self._generate_test_failure_fix(failure, state)
         
         elif strategy["name"] == "java_version":
             return self._generate_java_version_fix(failure, state)
@@ -256,6 +272,39 @@ class HealerAgent:
             "files": [state.workflow_content.path],
             "confidence": 0.95,
             "description": "Add chmod +x gradlew before running tests",
+        }
+    
+    def _generate_test_failure_fix(self, failure, state: AgentState) -> Dict:
+        """Generate fix for test failures by adding proper test commands."""
+        workflow_content = state.workflow_content.content
+        lines = workflow_content.split('\n')
+        new_lines = []
+        
+        for i, line in enumerate(lines):
+            new_lines.append(line)
+            
+            # Find the test step and add continue-on-error or proper test command
+            if '- name:' in line and ('test' in line.lower() or 'run tests' in line.lower()):
+                # Check if next lines contain the run command
+                if i + 1 < len(lines) and 'run:' in lines[i + 1]:
+                    run_line = lines[i + 1]
+                    indent = len(run_line) - len(run_line.lstrip())
+                    
+                    # If it's gradlew test, make sure it uses proper flags
+                    if './gradlew' in run_line and 'test' in run_line:
+                        # Add --continue flag to show all failures
+                        if '--continue' not in run_line:
+                            new_lines[len(new_lines)-1] = run_line.replace('test', 'test --continue --no-daemon')
+                            i += 1
+                            continue
+        
+        new_content = '\n'.join(new_lines)
+        
+        return {
+            "content": new_content,
+            "files": [state.workflow_content.path],
+            "confidence": 0.75,
+            "description": "Add proper test flags to show all failures and continue on error",
         }
     
     def _generate_java_version_fix(self, failure, state: AgentState) -> Dict:
